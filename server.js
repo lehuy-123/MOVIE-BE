@@ -27,12 +27,23 @@ if (!process.env.ADMIN_PASSWORD) {
 const adminSockets = new Set();
 // Token phiên Admin (để giữ quyền khi reload trang / mất kết nối)
 const adminTokens = new Set();
+const ADMIN_SECRET = process.env.ADMIN_SECRET || 'wetube_cine_admin_secret_2026';
+
+function createAdminToken() {
+  return crypto.createHmac('sha256', ADMIN_SECRET).update(`${ADMIN_USERNAME}:${ADMIN_PASSWORD}`).digest('hex');
+}
 
 function safeEqual(a, b) {
   const bufA = Buffer.from(String(a));
   const bufB = Buffer.from(String(b));
   if (bufA.length !== bufB.length) return false;
   return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function verifyAdminToken(token) {
+  if (!token || typeof token !== 'string') return false;
+  const expected = createAdminToken();
+  return safeEqual(token, expected) || adminTokens.has(token);
 }
 
 function isAdminSocket(socketId) {
@@ -264,7 +275,7 @@ io.on('connection', (socket) => {
     leaveCurrentRoom(socket);
 
     // Khôi phục quyền Admin nếu client gửi kèm token hợp lệ (reload trang / reconnect)
-    if (adminToken && adminTokens.has(adminToken)) {
+    if (adminToken && verifyAdminToken(adminToken)) {
       adminSockets.add(socket.id);
     }
 
@@ -330,7 +341,7 @@ io.on('connection', (socket) => {
       return reply({ ok: false, message: 'Sai tên đăng nhập hoặc mật khẩu Admin.' });
     }
 
-    const token = crypto.randomBytes(24).toString('hex');
+    const token = createAdminToken();
     adminTokens.add(token);
     adminSockets.add(socket.id);
 
@@ -559,7 +570,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 5.3 Claim Admin role
+  // 5.3 Claim Admin role (yêu cầu mật khẩu Admin)
   socket.on('claim-admin', ({ key } = {}) => {
     const roomId = socketToRoom.get(socket.id);
     const room = roomId ? rooms.get(roomId) : null;
@@ -568,8 +579,9 @@ io.on('connection', (socket) => {
     const user = room.users.get(socket.id);
     if (!user) return;
 
-    const canClaim = !room.hostId || !room.users.has(room.hostId) || key === 'admin123' || room.users.size === 1;
+    const canClaim = safeEqual(String(key || ''), ADMIN_PASSWORD);
     if (canClaim) {
+      adminSockets.add(socket.id);
       if (room.hostId && room.users.has(room.hostId)) {
         const prevHost = room.users.get(room.hostId);
         if (prevHost) prevHost.isAdmin = false;
@@ -579,6 +591,8 @@ io.on('connection', (socket) => {
       console.log(`[Admin ${room.name}] 👑 User ${user.nickname} claimed Admin role!`);
       io.to(room.roomId).emit('users-updated', getSerializedUsers(room));
       io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
+    } else {
+      socket.emit('error-message', { message: 'Mật khẩu Admin không chính xác!' });
     }
   });
 
