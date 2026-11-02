@@ -1,5 +1,6 @@
 import { createServer } from 'http';
 import { Server } from 'socket.io';
+import crypto from 'crypto';
 
 // Auto-load .env natively (supported in Node 20.6+) or safely ignore if already in process.env
 if (typeof process.loadEnvFile === 'function') {
@@ -12,6 +13,31 @@ if (typeof process.loadEnvFile === 'function') {
 
 const PORT = process.env.PORT || 3001;
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
+
+// ─── Tài khoản Admin (cấu hình qua biến môi trường) ───
+// Khán giả thường KHÔNG cần đăng nhập: chỉ nhập tên + chọn màu áo + chọn ghế.
+// Chỉ Admin mới cần tên + mật khẩu để đổi phim / điều khiển phát.
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
+if (!process.env.ADMIN_PASSWORD) {
+  console.warn('[Admin] ⚠️  Đang dùng mật khẩu admin mặc định. Hãy đặt ADMIN_USERNAME / ADMIN_PASSWORD trong .env khi deploy!');
+}
+
+// socketId đang có quyền Admin
+const adminSockets = new Set();
+// Token phiên Admin (để giữ quyền khi reload trang / mất kết nối)
+const adminTokens = new Set();
+
+function safeEqual(a, b) {
+  const bufA = Buffer.from(String(a));
+  const bufB = Buffer.from(String(b));
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function isAdminSocket(socketId) {
+  return adminSockets.has(socketId);
+}
 
 // Avatar palette for new viewers
 const AVATAR_COLORS = [
@@ -208,16 +234,11 @@ function leaveCurrentRoom(socket) {
 
     console.log(`[Cinema] User ${user?.nickname || socket.id} left room "${room.name}" (${currentRoomId})`);
 
-    // If host left, transfer host to next user in this room
+    // Nếu Admin rời rạp: chuyển hostId cho Admin khác còn trong rạp (nếu có).
+    // KHÔNG tự động phong Admin cho khán giả thường.
     if (socket.id === room.hostId) {
-      const nextUser = room.users.values().next().value;
-      if (nextUser) {
-        room.hostId = nextUser.socketId;
-        nextUser.isAdmin = true;
-        console.log(`[Cinema] 👑 New host assigned in ${room.name}: ${nextUser.nickname}`);
-      } else {
-        room.hostId = null;
-      }
+      const nextAdmin = Array.from(room.users.values()).find((u) => u.isAdmin);
+      room.hostId = nextAdmin ? nextAdmin.socketId : null;
     }
 
     socket.leave(currentRoomId);
@@ -238,87 +259,110 @@ io.on('connection', (socket) => {
   // Send current rooms summary to client immediately upon connection
   socket.emit('rooms-list', getAllRoomsSummary());
 
-  // 1. Client joins a specific cinema room (defaults to cinema-01)
-  socket.on('join-room', ({ roomId = 'cinema-01', nickname, avatarColor, gender }) => {
-    // Leave previous room if already joined one
+  // Helper: cho socket vào một rạp (dùng chung cho join-room & switch-room)
+  function enterRoom(roomId, { nickname, avatarColor, gender, adminToken } = {}) {
     leaveCurrentRoom(socket);
+
+    // Khôi phục quyền Admin nếu client gửi kèm token hợp lệ (reload trang / reconnect)
+    if (adminToken && adminTokens.has(adminToken)) {
+      adminSockets.add(socket.id);
+    }
 
     const room = getOrCreateRoom(roomId);
     socket.join(roomId);
     socketToRoom.set(socket.id, roomId);
 
-    // If no active host in this room, first user becomes Host/Admin of this room!
-    const isFirstUser = !room.hostId || !room.users.has(room.hostId);
-    if (isFirstUser) {
-      room.hostId = socket.id;
-    }
-
-    const randomColor =
-      avatarColor || AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)];
-    const viewerName = nickname || (isFirstUser ? 'Admin' : `Viewer_${socket.id.substring(0, 4)}`);
+    const isAdmin = isAdminSocket(socket.id);
+    if (isAdmin) room.hostId = socket.id;
 
     const user = {
       socketId: socket.id,
-      nickname: viewerName,
+      nickname: (nickname && String(nickname).trim().substring(0, 24)) || `Khách_${socket.id.substring(0, 4)}`,
       seatId: null,
-      avatarColor: randomColor,
+      avatarColor: avatarColor || AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)],
       gender: gender || 'Nam',
       joinedAt: Date.now(),
-      isAdmin: socket.id === room.hostId,
+      isAdmin,
     };
-
     room.users.set(socket.id, user);
 
-    console.log(
-      `[Cinema] ${viewerName} (${user.isAdmin ? '👑 ADMIN' : 'Viewer'}) joined [${room.name}]. Room viewers: ${room.users.size}`
-    );
+    console.log(`[Cinema] ${user.nickname} (${isAdmin ? '👑 ADMIN' : 'Khán giả'}) vào [${room.name}]. Số người: ${room.users.size}`);
 
-    // Send full current room state (movie, timestamp, users) to newly joined client
     socket.emit('room-state', getSerializableRoomState(room));
-
-    // Notify other viewers in this room
     socket.to(roomId).emit('user-joined', user);
     io.to(roomId).emit('users-updated', getSerializedUsers(room));
-
-    // Update rooms list summary for all clients
     io.emit('rooms-list', getAllRoomsSummary());
+  }
+
+  // Helper: lấy rạp hiện tại của socket
+  function currentRoom() {
+    const roomId = socketToRoom.get(socket.id);
+    return roomId ? rooms.get(roomId) : null;
+  }
+
+  // Helper: chặn thao tác dành riêng cho Admin
+  function requireAdmin(actionLabel) {
+    if (isAdminSocket(socket.id)) return true;
+    socket.emit('error-message', {
+      message: `Chỉ Admin mới có quyền ${actionLabel}. Bạn có thể gửi yêu cầu phim vào hàng chờ nhé!`,
+    });
+    return false;
+  }
+
+  // 1. Client vào rạp (mặc định Rạp 01)
+  socket.on('join-room', ({ roomId = 'cinema-01', ...profile } = {}) => {
+    enterRoom(roomId, profile);
   });
 
-  // 1.1 Client switches room
-  socket.on('switch-room', ({ newRoomId, nickname, avatarColor, gender }) => {
+  // 1.1 Client đổi rạp
+  socket.on('switch-room', ({ newRoomId, ...profile } = {}) => {
     if (!newRoomId) return;
-    leaveCurrentRoom(socket);
+    enterRoom(newRoomId, profile);
+  });
 
-    const room = getOrCreateRoom(newRoomId);
-    socket.join(newRoomId);
-    socketToRoom.set(socket.id, newRoomId);
+  // 1.A Đăng nhập Admin bằng tên + mật khẩu
+  socket.on('admin-login', ({ username, password } = {}, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const ok = safeEqual(String(username || '').trim(), ADMIN_USERNAME) && safeEqual(String(password || ''), ADMIN_PASSWORD);
 
-    const isFirstUser = !room.hostId || !room.users.has(room.hostId);
-    if (isFirstUser) {
-      room.hostId = socket.id;
+    if (!ok) {
+      console.log(`[Admin] ❌ Đăng nhập thất bại từ ${socket.id}`);
+      return reply({ ok: false, message: 'Sai tên đăng nhập hoặc mật khẩu Admin.' });
     }
 
-    const randomColor =
-      avatarColor || AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)];
-    const viewerName = nickname || (isFirstUser ? 'Admin' : `Viewer_${socket.id.substring(0, 4)}`);
+    const token = crypto.randomBytes(24).toString('hex');
+    adminTokens.add(token);
+    adminSockets.add(socket.id);
 
-    const user = {
-      socketId: socket.id,
-      nickname: viewerName,
-      seatId: null,
-      avatarColor: randomColor,
-      gender: gender || 'Nam',
-      joinedAt: Date.now(),
-      isAdmin: socket.id === room.hostId,
-    };
+    const room = currentRoom();
+    if (room) {
+      room.hostId = socket.id;
+      const user = room.users.get(socket.id);
+      if (user) user.isAdmin = true;
+      io.to(room.roomId).emit('users-updated', getSerializedUsers(room));
+      io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
+    }
 
-    room.users.set(socket.id, user);
+    console.log(`[Admin] 👑 ${socket.id} đăng nhập Admin thành công`);
+    reply({ ok: true, token });
+  });
 
-    console.log(`[Cinema] User ${viewerName} switched to [${room.name}]`);
-    socket.emit('room-state', getSerializableRoomState(room));
-    socket.to(newRoomId).emit('user-joined', user);
-    io.to(newRoomId).emit('users-updated', getSerializedUsers(room));
-    io.emit('rooms-list', getAllRoomsSummary());
+  // 1.B Đăng xuất Admin
+  socket.on('admin-logout', ({ adminToken } = {}) => {
+    adminSockets.delete(socket.id);
+    if (adminToken) adminTokens.delete(adminToken);
+
+    const room = currentRoom();
+    if (room) {
+      const user = room.users.get(socket.id);
+      if (user) user.isAdmin = false;
+      if (room.hostId === socket.id) {
+        const nextAdmin = Array.from(room.users.values()).find((u) => u.isAdmin);
+        room.hostId = nextAdmin ? nextAdmin.socketId : null;
+      }
+      io.to(room.roomId).emit('users-updated', getSerializedUsers(room));
+      io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
+    }
   });
 
   // 1.2 Client requests room list
@@ -338,6 +382,11 @@ io.on('connection', (socket) => {
     const roomId = socketToRoom.get(socket.id);
     const room = roomId ? rooms.get(roomId) : null;
     if (!room) return;
+    if (!isAdminSocket(socket.id)) {
+      // Khán giả không điều khiển phim chung: gửi lại trạng thái chuẩn để đồng bộ lại
+      socket.emit("room-state", getSerializableRoomState(room));
+      return;
+    }
 
     const currentTs =
       typeof payload?.timestamp === 'number' ? payload.timestamp : getCurrentTimestamp(room);
@@ -364,6 +413,11 @@ io.on('connection', (socket) => {
     const roomId = socketToRoom.get(socket.id);
     const room = roomId ? rooms.get(roomId) : null;
     if (!room) return;
+    if (!isAdminSocket(socket.id)) {
+      // Khán giả không điều khiển phim chung: gửi lại trạng thái chuẩn để đồng bộ lại
+      socket.emit("room-state", getSerializableRoomState(room));
+      return;
+    }
 
     const currentTs =
       typeof payload?.timestamp === 'number' ? payload.timestamp : getCurrentTimestamp(room);
@@ -390,6 +444,11 @@ io.on('connection', (socket) => {
     const roomId = socketToRoom.get(socket.id);
     const room = roomId ? rooms.get(roomId) : null;
     if (!room) return;
+    if (!isAdminSocket(socket.id)) {
+      // Khán giả không điều khiển phim chung: gửi lại trạng thái chuẩn để đồng bộ lại
+      socket.emit("room-state", getSerializableRoomState(room));
+      return;
+    }
 
     if (typeof payload?.timestamp !== 'number') return;
     const seekTs = Math.max(0, payload.timestamp);
@@ -416,15 +475,8 @@ io.on('connection', (socket) => {
     const room = roomId ? rooms.get(roomId) : null;
     if (!room || !videoId) return;
 
+    if (!requireAdmin("đổi phim trực tiếp")) return;
     const user = room.users.get(socket.id);
-    const isHost = socket.id === room.hostId || user?.isAdmin;
-
-    if (!isHost) {
-      socket.emit('error-message', {
-        message: 'Chỉ Admin / Chủ phòng mới có quyền đổi phim trực tiếp. Bạn hãy gửi yêu cầu phim vào danh sách chờ nhé!',
-      });
-      return;
-    }
 
     room.videoId = videoId;
     room.videoTitle = videoTitle || `YouTube Video (${videoId})`;
@@ -480,9 +532,8 @@ io.on('connection', (socket) => {
     const room = roomId ? rooms.get(roomId) : null;
     if (!room) return;
 
+    if (!requireAdmin("quản lý hàng chờ")) return;
     const user = room.users.get(socket.id);
-    const isHost = socket.id === room.hostId || user?.isAdmin;
-    if (!isHost) return;
 
     if (action === 'play' && videoId) {
       room.queue = room.queue.filter((q) => q.id !== requestId);
