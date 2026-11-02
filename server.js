@@ -120,6 +120,7 @@ DEFAULT_ROOMS.forEach((def) => {
     users: new Map(),
     skipVotes: new Set(),
     queue: [],
+    chatHistory: [],
   });
 });
 
@@ -142,6 +143,7 @@ function getOrCreateRoom(roomId, customName) {
       users: new Map(),
       skipVotes: new Set(),
       queue: [],
+      chatHistory: [],
     };
     rooms.set(roomId, room);
   }
@@ -161,6 +163,13 @@ function getSerializedUsers(room) {
   return Array.from(room.users.values());
 }
 
+function broadcastChatMessage(room, chatPayload) {
+  if (!room.chatHistory) room.chatHistory = [];
+  room.chatHistory.push(chatPayload);
+  if (room.chatHistory.length > 60) room.chatHistory.shift();
+  io.to(room.roomId).emit('chat-message', chatPayload);
+}
+
 function getSerializableRoomState(room) {
   return {
     roomId: room.roomId,
@@ -176,6 +185,7 @@ function getSerializableRoomState(room) {
     users: getSerializedUsers(room),
     skipVotes: Array.from(room.skipVotes),
     queue: room.queue,
+    chatHistory: room.chatHistory || [],
   };
 }
 
@@ -271,7 +281,7 @@ io.on('connection', (socket) => {
   socket.emit('rooms-list', getAllRoomsSummary());
 
   // Helper: cho socket vào một rạp (dùng chung cho join-room & switch-room)
-  function enterRoom(roomId, { nickname, avatarColor, gender, adminToken } = {}) {
+  function enterRoom(roomId, { nickname, avatarColor, gender, seatId, adminToken } = {}) {
     leaveCurrentRoom(socket);
 
     // Khôi phục quyền Admin nếu client gửi kèm token hợp lệ (reload trang / reconnect)
@@ -286,10 +296,25 @@ io.on('connection', (socket) => {
     const isAdmin = isAdminSocket(socket.id);
     if (isAdmin) room.hostId = socket.id;
 
+    // Khôi phục ghế ngồi nếu client đã có ghế trước đó và ghế vẫn còn trống (giữ ghế khi F5 / switch tab)
+    let restoredSeatId = null;
+    if (seatId && typeof seatId === 'string') {
+      let isOccupied = false;
+      for (const [sId, otherUser] of room.users.entries()) {
+        if (sId !== socket.id && otherUser.seatId === seatId) {
+          isOccupied = true;
+          break;
+        }
+      }
+      if (!isOccupied) {
+        restoredSeatId = seatId;
+      }
+    }
+
     const user = {
       socketId: socket.id,
       nickname: (nickname && String(nickname).trim().substring(0, 24)) || `Khách_${socket.id.substring(0, 4)}`,
-      seatId: null,
+      seatId: restoredSeatId,
       avatarColor: avatarColor || AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)],
       gender: gender || 'Nam',
       joinedAt: Date.now(),
@@ -297,7 +322,7 @@ io.on('connection', (socket) => {
     };
     room.users.set(socket.id, user);
 
-    console.log(`[Cinema] ${user.nickname} (${isAdmin ? '👑 ADMIN' : 'Khán giả'}) vào [${room.name}]. Số người: ${room.users.size}`);
+    console.log(`[Cinema] ${user.nickname} (${isAdmin ? '👑 ADMIN' : 'Khán giả'}, Ghế: ${user.seatId || 'chưa chọn'}) vào [${room.name}]. Số người: ${room.users.size}`);
 
     socket.emit('room-state', getSerializableRoomState(room));
     socket.to(roomId).emit('user-joined', user);
@@ -526,7 +551,7 @@ io.on('connection', (socket) => {
 
     console.log(`[Queue ${room.name}] 📥 ${user?.nickname} requested video "${requestItem.videoTitle}"`);
     io.to(room.roomId).emit('queue-updated', room.queue);
-    io.to(room.roomId).emit('chat-message', {
+    broadcastChatMessage(room, {
       id: `sys-${Date.now()}`,
       socketId: 'system',
       nickname: 'Hệ Thống',
@@ -666,7 +691,7 @@ io.on('connection', (socket) => {
     };
 
     console.log(`[Chat ${room.name}] ${nickname}: "${chatPayload.message}"`);
-    io.to(room.roomId).emit('chat-message', chatPayload);
+    broadcastChatMessage(room, chatPayload);
   });
 
   // 9. Client votes to skip video
