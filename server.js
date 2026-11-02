@@ -67,8 +67,8 @@ const DEFAULT_ROOMS = [
     roomId: 'cinema-01',
     name: 'Rạp 01 · IMAX Star',
     order: 1,
-    videoId: 'Sx5lJtEs56A',
-    videoTitle: 'Tình Xưa Xa Rồi - Tiếng Hát Ngọc Lan',
+    videoId: '60ItHLz5WEA',
+    videoTitle: 'Alan Walker - Faded',
   },
   {
     roomId: 'cinema-02',
@@ -351,6 +351,7 @@ io.on('connection', (socket) => {
       const user = room.users.get(socket.id);
       if (user) user.isAdmin = true;
       io.to(room.roomId).emit('users-updated', getSerializedUsers(room));
+    io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
       io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
     }
 
@@ -372,6 +373,7 @@ io.on('connection', (socket) => {
         room.hostId = nextAdmin ? nextAdmin.socketId : null;
       }
       io.to(room.roomId).emit('users-updated', getSerializedUsers(room));
+    io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
       io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
     }
   });
@@ -590,6 +592,7 @@ io.on('connection', (socket) => {
       user.isAdmin = true;
       console.log(`[Admin ${room.name}] 👑 User ${user.nickname} claimed Admin role!`);
       io.to(room.roomId).emit('users-updated', getSerializedUsers(room));
+    io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
       io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
     } else {
       socket.emit('error-message', { message: 'Mật khẩu Admin không chính xác!' });
@@ -597,13 +600,17 @@ io.on('connection', (socket) => {
   });
 
   // 6. Client selects seat
-  socket.on('user-select-seat', ({ seatId }) => {
+  socket.on('user-select-seat', ({ seatId, nickname, avatarColor, gender } = {}) => {
     const roomId = socketToRoom.get(socket.id);
     const room = roomId ? rooms.get(roomId) : null;
     if (!room) return;
 
     const user = room.users.get(socket.id);
     if (!user) return;
+
+    if (nickname) user.nickname = String(nickname).trim().substring(0, 24);
+    if (avatarColor) user.avatarColor = avatarColor;
+    if (gender) user.gender = gender;
 
     let isOccupied = false;
     for (const [sId, otherUser] of room.users.entries()) {
@@ -615,12 +622,15 @@ io.on('connection', (socket) => {
 
     if (isOccupied) {
       console.log(`[Seat ${room.name}] Seat ${seatId} is already occupied.`);
+      socket.emit('error-message', { message: `Ghế ${seatId} đã có người ngồi, vui lòng chọn ghế khác nhé!` });
       return;
     }
 
     user.seatId = seatId;
     console.log(`[Seat ${room.name}] User ${user.nickname} took seat ${seatId}`);
     io.to(room.roomId).emit('users-updated', getSerializedUsers(room));
+    io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
+    io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
   });
 
   // 7. Client leaves seat
@@ -635,6 +645,8 @@ io.on('connection', (socket) => {
     user.seatId = null;
     console.log(`[Seat ${room.name}] User ${user.nickname} left seat ${prevSeat}`);
     io.to(room.roomId).emit('users-updated', getSerializedUsers(room));
+    io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
+    io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
   });
 
   // 8. Client sends chat message
@@ -693,6 +705,7 @@ io.on('connection', (socket) => {
     if (gender) user.gender = gender;
 
     io.to(room.roomId).emit('users-updated', getSerializedUsers(room));
+    io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
   });
 
   // 11. Client disconnects
