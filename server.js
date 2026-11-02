@@ -351,7 +351,6 @@ io.on('connection', (socket) => {
       const user = room.users.get(socket.id);
       if (user) user.isAdmin = true;
       io.to(room.roomId).emit('users-updated', getSerializedUsers(room));
-    io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
       io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
     }
 
@@ -373,7 +372,6 @@ io.on('connection', (socket) => {
         room.hostId = nextAdmin ? nextAdmin.socketId : null;
       }
       io.to(room.roomId).emit('users-updated', getSerializedUsers(room));
-    io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
       io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
     }
   });
@@ -592,7 +590,6 @@ io.on('connection', (socket) => {
       user.isAdmin = true;
       console.log(`[Admin ${room.name}] 👑 User ${user.nickname} claimed Admin role!`);
       io.to(room.roomId).emit('users-updated', getSerializedUsers(room));
-    io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
       io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
     } else {
       socket.emit('error-message', { message: 'Mật khẩu Admin không chính xác!' });
@@ -630,7 +627,6 @@ io.on('connection', (socket) => {
     console.log(`[Seat ${room.name}] User ${user.nickname} took seat ${seatId}`);
     io.to(room.roomId).emit('users-updated', getSerializedUsers(room));
     io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
-    io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
   });
 
   // 7. Client leaves seat
@@ -645,7 +641,6 @@ io.on('connection', (socket) => {
     user.seatId = null;
     console.log(`[Seat ${room.name}] User ${user.nickname} left seat ${prevSeat}`);
     io.to(room.roomId).emit('users-updated', getSerializedUsers(room));
-    io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
     io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
   });
 
