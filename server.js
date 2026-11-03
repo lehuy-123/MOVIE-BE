@@ -171,6 +171,8 @@ function broadcastChatMessage(room, chatPayload) {
 }
 
 function getSerializableRoomState(room) {
+  const now = Date.now();
+  const currentTs = getCurrentTimestamp(room);
   return {
     roomId: room.roomId,
     name: room.name,
@@ -179,9 +181,9 @@ function getSerializableRoomState(room) {
     videoId: room.videoId,
     videoTitle: room.videoTitle,
     status: room.status,
-    timestamp: getCurrentTimestamp(room),
-    updatedAt: room.updatedAt,
-    serverTime: Date.now(),
+    timestamp: currentTs,
+    updatedAt: now,
+    serverTime: now,
     users: getSerializedUsers(room),
     skipVotes: Array.from(room.skipVotes),
     queue: room.queue,
@@ -418,11 +420,6 @@ io.on('connection', (socket) => {
     const roomId = socketToRoom.get(socket.id);
     const room = roomId ? rooms.get(roomId) : null;
     if (!room) return;
-    if (!isAdminSocket(socket.id)) {
-      // Khán giả không điều khiển phim chung: gửi lại trạng thái chuẩn để đồng bộ lại
-      socket.emit("room-state", getSerializableRoomState(room));
-      return;
-    }
 
     const currentTs =
       typeof payload?.timestamp === 'number' ? payload.timestamp : getCurrentTimestamp(room);
@@ -449,11 +446,6 @@ io.on('connection', (socket) => {
     const roomId = socketToRoom.get(socket.id);
     const room = roomId ? rooms.get(roomId) : null;
     if (!room) return;
-    if (!isAdminSocket(socket.id)) {
-      // Khán giả không điều khiển phim chung: gửi lại trạng thái chuẩn để đồng bộ lại
-      socket.emit("room-state", getSerializableRoomState(room));
-      return;
-    }
 
     const currentTs =
       typeof payload?.timestamp === 'number' ? payload.timestamp : getCurrentTimestamp(room);
@@ -480,11 +472,6 @@ io.on('connection', (socket) => {
     const roomId = socketToRoom.get(socket.id);
     const room = roomId ? rooms.get(roomId) : null;
     if (!room) return;
-    if (!isAdminSocket(socket.id)) {
-      // Khán giả không điều khiển phim chung: gửi lại trạng thái chuẩn để đồng bộ lại
-      socket.emit("room-state", getSerializableRoomState(room));
-      return;
-    }
 
     if (typeof payload?.timestamp !== 'number') return;
     const seekTs = Math.max(0, payload.timestamp);
