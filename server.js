@@ -365,6 +365,10 @@ io.on('connection', (socket) => {
       joinedAt: prevUser?.joinedAt || Date.now(),
       isAdmin,
       canControl: isAdmin || Boolean(prevUser?.canControl),
+      isChatMuted: Boolean(prevUser?.isChatMuted),
+      isMicMuted: Boolean(prevUser?.isMicMuted),
+      isMicOn: false,
+      isSpeaking: false,
     };
     room.users.set(socket.id, user);
 
@@ -597,6 +601,84 @@ io.on('connection', (socket) => {
     });
   });
 
+  // Admin cấm / mở cấm chat người dùng
+  socket.on('admin-toggle-chat-mute', ({ targetSocketId, isMuted }) => {
+    const roomId = socketToRoom.get(socket.id);
+    const room = roomId ? rooms.get(roomId) : null;
+    if (!room || !targetSocketId) return;
+
+    if (!isAdminSocket(socket.id)) {
+      socket.emit('error-message', { message: 'Chỉ Quản trị viên mới có quyền cấm chat!' });
+      return;
+    }
+
+    const targetUser = room.users.get(targetSocketId);
+    if (!targetUser) return;
+    if (isAdminSocket(targetSocketId)) {
+      socket.emit('error-message', { message: 'Không thể cấm chat tài khoản Quản trị viên!' });
+      return;
+    }
+
+    targetUser.isChatMuted = typeof isMuted === 'boolean' ? isMuted : !targetUser.isChatMuted;
+
+    console.log(`[Admin Mute Chat ${room.name}] ${targetUser.nickname}: isChatMuted=${targetUser.isChatMuted}`);
+    io.to(room.roomId).emit('users-updated', getSerializedUsers(room));
+    io.to(targetSocketId).emit('admin-muted-chat', { isMuted: targetUser.isChatMuted });
+
+    broadcastChatMessage(room, {
+      id: `sys-${Date.now()}`,
+      socketId: 'system',
+      nickname: 'Hệ Thống',
+      seatId: null,
+      avatarColor: '#f43f5e',
+      message: targetUser.isChatMuted
+        ? `🔇 Khán giả "${targetUser.nickname}" đã bị Quản trị viên cấm chat.`
+        : `💬 Khán giả "${targetUser.nickname}" đã được Quản trị viên mở cấm chat.`,
+      createdAt: Date.now(),
+    });
+  });
+
+  // Admin cấm / mở cấm micro người dùng
+  socket.on('admin-toggle-mic-mute', ({ targetSocketId, isMuted }) => {
+    const roomId = socketToRoom.get(socket.id);
+    const room = roomId ? rooms.get(roomId) : null;
+    if (!room || !targetSocketId) return;
+
+    if (!isAdminSocket(socket.id)) {
+      socket.emit('error-message', { message: 'Chỉ Quản trị viên mới có quyền cấm micro!' });
+      return;
+    }
+
+    const targetUser = room.users.get(targetSocketId);
+    if (!targetUser) return;
+    if (isAdminSocket(targetSocketId)) {
+      socket.emit('error-message', { message: 'Không thể cấm micro tài khoản Quản trị viên!' });
+      return;
+    }
+
+    targetUser.isMicMuted = typeof isMuted === 'boolean' ? isMuted : !targetUser.isMicMuted;
+    if (targetUser.isMicMuted) {
+      targetUser.isMicOn = false;
+      targetUser.isSpeaking = false;
+    }
+
+    console.log(`[Admin Mute Mic ${room.name}] ${targetUser.nickname}: isMicMuted=${targetUser.isMicMuted}`);
+    io.to(room.roomId).emit('users-updated', getSerializedUsers(room));
+    io.to(targetSocketId).emit('admin-muted-mic', { isMuted: targetUser.isMicMuted });
+
+    broadcastChatMessage(room, {
+      id: `sys-${Date.now()}`,
+      socketId: 'system',
+      nickname: 'Hệ Thống',
+      seatId: null,
+      avatarColor: '#f43f5e',
+      message: targetUser.isMicMuted
+        ? `🎙️❌ Khán giả "${targetUser.nickname}" đã bị Quản trị viên cấm micro.`
+        : `🎙️✅ Khán giả "${targetUser.nickname}" đã được Quản trị viên mở cấm micro.`,
+      createdAt: Date.now(),
+    });
+  });
+
   // 5. Client changes video (Admin Only)
   socket.on('user-change-video', ({ videoId, videoTitle }) => {
     const roomId = socketToRoom.get(socket.id);
@@ -774,6 +856,11 @@ io.on('connection', (socket) => {
     if (!room || !message || typeof message !== 'string' || !message.trim()) return;
 
     const user = room.users.get(socket.id);
+    if (user?.isChatMuted && !isAdminSocket(socket.id)) {
+      socket.emit('error-message', { message: 'Bạn đã bị Quản trị viên cấm chat trong phòng này!' });
+      return;
+    }
+
     const nickname = user?.nickname || `Viewer_${socket.id.substring(0, 4)}`;
     const seatId = user?.seatId || null;
     const avatarColor = user?.avatarColor || '#3b82f6';
@@ -810,7 +897,46 @@ io.on('connection', (socket) => {
     });
   });
 
-  // 10. Client updates profile
+  // 10. Voice Chat Signaling (WebRTC Mesh) & Mic Status
+  socket.on('webrtc-offer', ({ to, offer }) => {
+    const roomId = socketToRoom.get(socket.id);
+    const room = roomId ? rooms.get(roomId) : null;
+    const user = room?.users?.get(socket.id);
+    if (user?.isMicMuted && !isAdminSocket(socket.id)) return;
+    io.to(to).emit('webrtc-offer', { from: socket.id, offer });
+  });
+
+  socket.on('webrtc-answer', ({ to, answer }) => {
+    io.to(to).emit('webrtc-answer', { from: socket.id, answer });
+  });
+
+  socket.on('webrtc-ice-candidate', ({ to, candidate }) => {
+    io.to(to).emit('webrtc-ice-candidate', { from: socket.id, candidate });
+  });
+
+  // Cập nhật trạng thái bật/tắt mic và nói chuyện của người dùng
+  socket.on('user-mic-status', ({ isMicOn, isSpeaking }) => {
+    const roomId = socketToRoom.get(socket.id);
+    const room = roomId ? rooms.get(roomId) : null;
+    if (!room) return;
+
+    const user = room.users.get(socket.id);
+    if (!user) return;
+
+    if (user.isMicMuted && !isAdminSocket(socket.id)) {
+      user.isMicOn = false;
+      user.isSpeaking = false;
+      socket.emit('admin-muted-mic', { isMuted: true });
+      io.to(room.roomId).emit('users-updated', getSerializedUsers(room));
+      return;
+    }
+
+    user.isMicOn = Boolean(isMicOn);
+    user.isSpeaking = Boolean(isSpeaking);
+    io.to(room.roomId).emit('users-updated', getSerializedUsers(room));
+  });
+
+  // 11. Client updates profile
   socket.on('user-update-profile', ({ nickname, avatarColor, gender }) => {
     const roomId = socketToRoom.get(socket.id);
     const room = roomId ? rooms.get(roomId) : null;
