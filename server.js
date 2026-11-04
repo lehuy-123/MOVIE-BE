@@ -127,6 +127,7 @@ DEFAULT_ROOMS.forEach((def) => {
     skipVotes: new Set(),
     queue: [],
     chatHistory: [],
+    showSubtitles: false,
   });
 });
 
@@ -150,6 +151,7 @@ function getOrCreateRoom(roomId, customName) {
       skipVotes: new Set(),
       queue: [],
       chatHistory: [],
+      showSubtitles: false,
     };
     rooms.set(roomId, room);
   }
@@ -194,6 +196,7 @@ function getSerializableRoomState(room) {
     skipVotes: Array.from(room.skipVotes),
     queue: room.queue,
     chatHistory: room.chatHistory || [],
+    showSubtitles: Boolean(room.showSubtitles),
   };
 }
 
@@ -562,6 +565,41 @@ io.on('connection', (socket) => {
 
     console.log(`[Sync ${room.name}] Seek event from ${socket.id} to ${seekTs.toFixed(2)}s`);
     socket.to(room.roomId).emit('sync-seek', syncPayload);
+  });
+
+  // 4.05 Admin hoặc người được cấp quyền bật/tắt phụ đề đồng bộ cả phòng
+  socket.on('user-toggle-subtitles', ({ showSubtitles } = {}) => {
+    const roomId = socketToRoom.get(socket.id);
+    const room = roomId ? rooms.get(roomId) : null;
+    if (!room) return;
+
+    if (!canControlVideo(socket.id, room)) {
+      socket.emit('error-message', { message: 'Chỉ Admin hoặc người được cấp quyền mới có thể bật/tắt phụ đề!' });
+      return;
+    }
+
+    const nextVal = typeof showSubtitles === 'boolean' ? showSubtitles : !room.showSubtitles;
+    room.showSubtitles = nextVal;
+
+    console.log(`[Sync Subtitles ${room.name}] ${nextVal ? 'BẬT' : 'TẮT'} phụ đề bởi ${socket.id}`);
+    io.to(room.roomId).emit('sync-subtitles', {
+      showSubtitles: room.showSubtitles,
+      senderId: socket.id,
+    });
+    io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
+
+    const user = room.users.get(socket.id);
+    broadcastChatMessage(room, {
+      id: `sys-${Date.now()}`,
+      socketId: 'system',
+      nickname: 'Hệ Thống',
+      seatId: null,
+      avatarColor: '#38bdf8',
+      message: room.showSubtitles
+        ? `💬 ${user?.nickname || 'Quản trị viên'} đã BẬT phụ đề cho cả phòng chiếu.`
+        : `💬 ${user?.nickname || 'Quản trị viên'} đã TẮT phụ đề cho cả phòng chiếu để tránh rối mắt.`,
+      createdAt: Date.now(),
+    });
   });
 
   // 4.1 Admin phân quyền điều khiển video cho người dùng
