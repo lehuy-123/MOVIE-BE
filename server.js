@@ -67,42 +67,42 @@ const AVATAR_COLORS = [
   '#f97316', // orange
 ];
 
-// Default pre-seeded numbered cinema rooms
+// Default pre-seeded numbered cinema rooms (Khởi động ở chế độ màn hình chờ Standby, không phát sẵn nhạc YouTube)
 const DEFAULT_ROOMS = [
   {
     roomId: 'cinema-01',
     name: 'Rạp 01 · IMAX Star',
     order: 1,
-    videoId: '60ItHLz5WEA',
-    videoTitle: 'Alan Walker - Faded',
+    videoId: '',
+    videoTitle: 'Đang chờ Quản trị viên chọn phim',
   },
   {
     roomId: 'cinema-02',
     name: 'Rạp 02 · Âm Nhạc & Chill',
     order: 2,
-    videoId: 'IcrbM1l_BoI',
-    videoTitle: 'Avicii - Wake Me Up (Official Video)',
+    videoId: '',
+    videoTitle: 'Đang chờ Quản trị viên chọn phim',
   },
   {
     roomId: 'cinema-03',
     name: 'Rạp 03 · Bom Tấn Điện Ảnh',
     order: 3,
-    videoId: 'aqz-KE-bpKQ',
-    videoTitle: 'Big Buck Bunny 4K 60fps',
+    videoId: '',
+    videoTitle: 'Đang chờ Quản trị viên chọn phim',
   },
   {
     roomId: 'cinema-04',
     name: 'Rạp 04 · Anime & Hoạt Hình',
     order: 4,
-    videoId: 'dQw4w9WgXcQ',
-    videoTitle: 'Phim Ngắn Anime Cinema HD',
+    videoId: '',
+    videoTitle: 'Đang chờ Quản trị viên chọn phim',
   },
   {
     roomId: 'cinema-05',
     name: 'Rạp 05 · Phòng Chiếu Riêng',
     order: 5,
-    videoId: 'pPv3cU61_-M',
-    videoTitle: 'YouTube Video (pPv3cU61_-M)',
+    videoId: '',
+    videoTitle: 'Đang chờ Quản trị viên chọn phim',
   },
 ];
 
@@ -111,16 +111,16 @@ const rooms = new Map();
 // Socket to room mapping: socketId -> roomId
 const socketToRoom = new Map();
 
-// Initialize default numbered rooms
+// Initialize default numbered rooms (khởi tạo ở chế độ màn hình chờ standby)
 DEFAULT_ROOMS.forEach((def) => {
   rooms.set(def.roomId, {
     roomId: def.roomId,
     name: def.name,
     order: def.order,
     hostId: null,
-    videoId: def.videoId,
-    videoTitle: def.videoTitle,
-    status: 'playing',
+    videoId: def.videoId || '',
+    videoTitle: def.videoTitle || 'Đang chờ Quản trị viên chọn phim',
+    status: def.videoId ? 'playing' : 'waiting',
     timestamp: 0,
     updatedAt: Date.now(),
     users: new Map(),
@@ -143,9 +143,9 @@ function getOrCreateRoom(roomId, customName) {
       name,
       order,
       hostId: null,
-      videoId: 'aqz-KE-bpKQ',
-      videoTitle: 'Big Buck Bunny 4K 60fps',
-      status: 'playing',
+      videoId: '',
+      videoTitle: 'Đang chờ Quản trị viên chọn phim',
+      status: 'waiting',
       timestamp: 0,
       updatedAt: Date.now(),
       users: new Map(),
@@ -481,6 +481,11 @@ io.on('connection', (socket) => {
     const room = roomId ? rooms.get(roomId) : null;
     if (!room) return;
 
+    if (!room.videoId) {
+      socket.emit('error-message', { message: 'Rạp đang ở chế độ màn hình chờ. Vui lòng bấm "Chiếu phim" để chọn phim!' });
+      return;
+    }
+
     if (!canControlVideo(socket.id, room)) {
       socket.emit('error-message', { message: 'Chỉ Admin hoặc người được cấp quyền mới có thể điều khiển video!' });
       socket.emit('room-state', getSerializableRoomState(room));
@@ -761,21 +766,21 @@ io.on('connection', (socket) => {
   socket.on('user-change-video', ({ videoId, videoTitle }) => {
     const roomId = socketToRoom.get(socket.id);
     const room = roomId ? rooms.get(roomId) : null;
-    if (!room || !videoId) return;
+    if (!room) return;
 
     if (!requireAdmin("đổi phim trực tiếp")) return;
     const user = room.users.get(socket.id);
 
-    room.videoId = videoId;
-    room.videoTitle = videoTitle || `YouTube Video (${videoId})`;
+    room.videoId = videoId ? String(videoId).trim() : '';
+    room.videoTitle = videoTitle || (room.videoId ? `YouTube Video (${room.videoId})` : 'Đang chờ Quản trị viên chọn phim');
     room.timestamp = 0;
-    room.status = 'playing';
+    room.status = room.videoId ? 'playing' : 'waiting';
     room.updatedAt = Date.now();
     room.skipVotes.clear();
 
-    console.log(`[Sync ${room.name}] 🎬 Video changed to "${videoId}" ("${room.videoTitle}") by Admin ${user?.nickname || socket.id}`);
+    console.log(`[Sync ${room.name}] 🎬 Video updated to "${room.videoId}" ("${room.videoTitle}") by Admin ${user?.nickname || socket.id}`);
     io.to(room.roomId).emit('sync-video', {
-      videoId,
+      videoId: room.videoId,
       videoTitle: room.videoTitle,
       updatedAt: room.updatedAt,
       suggester: user?.nickname || 'Admin',
