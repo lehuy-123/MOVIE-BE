@@ -128,6 +128,7 @@ DEFAULT_ROOMS.forEach((def) => {
     queue: [],
     chatHistory: [],
     showSubtitles: false,
+    isDimmed: true,
   });
 });
 
@@ -152,6 +153,7 @@ function getOrCreateRoom(roomId, customName) {
       queue: [],
       chatHistory: [],
       showSubtitles: false,
+      isDimmed: true,
     };
     rooms.set(roomId, room);
   }
@@ -197,6 +199,7 @@ function getSerializableRoomState(room) {
     queue: room.queue,
     chatHistory: room.chatHistory || [],
     showSubtitles: Boolean(room.showSubtitles),
+    isDimmed: room.isDimmed !== undefined ? Boolean(room.isDimmed) : true,
   };
 }
 
@@ -598,6 +601,43 @@ io.on('connection', (socket) => {
       message: room.showSubtitles
         ? `💬 ${user?.nickname || 'Quản trị viên'} đã BẬT phụ đề cho cả phòng chiếu.`
         : `💬 ${user?.nickname || 'Quản trị viên'} đã TẮT phụ đề cho cả phòng chiếu để tránh rối mắt.`,
+      createdAt: Date.now(),
+    });
+  });
+
+  // 4.06 Bật/tắt đèn khán phòng đồng bộ toàn thể người xem trong phòng
+  socket.on('user-toggle-dimmed', ({ isDimmed } = {}) => {
+    const roomId = socketToRoom.get(socket.id);
+    const room = roomId ? rooms.get(roomId) : null;
+    if (!room) return;
+
+    // Nếu phòng có Quản trị viên, chỉ Quản trị viên hoặc người được cấp quyền mới có thể chỉnh đèn
+    const hasAdminInRoom = Array.from(room.users.values()).some((u) => u.isAdmin);
+    if (hasAdminInRoom && !canControlVideo(socket.id, room)) {
+      socket.emit('error-message', { message: 'Chỉ Admin hoặc người được cấp quyền mới có thể bật/tắt đèn rạp!' });
+      return;
+    }
+
+    const nextVal = typeof isDimmed === 'boolean' ? isDimmed : (room.isDimmed !== undefined ? !room.isDimmed : false);
+    room.isDimmed = nextVal;
+
+    console.log(`[Sync Lights ${room.name}] ${nextVal ? 'TẮT ĐÈN (Dimmed)' : 'BẬT ĐÈN (Bright)'} bởi ${socket.id}`);
+    io.to(room.roomId).emit('sync-dimmed', {
+      isDimmed: room.isDimmed,
+      senderId: socket.id,
+    });
+    io.to(room.roomId).emit('room-state', getSerializableRoomState(room));
+
+    const user = room.users.get(socket.id);
+    broadcastChatMessage(room, {
+      id: `sys-${Date.now()}`,
+      socketId: 'system',
+      nickname: 'Hệ Thống',
+      seatId: null,
+      avatarColor: '#f59e0b',
+      message: room.isDimmed
+        ? `🎬 ${user?.nickname || 'Khán giả'} đã TẮT ĐÈN khán phòng - Chúc mọi người xem phim vui vẻ!`
+        : `💡 ${user?.nickname || 'Khán giả'} đã BẬT ĐÈN khán phòng.`,
       createdAt: Date.now(),
     });
   });
