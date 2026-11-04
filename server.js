@@ -976,19 +976,24 @@ io.on('connection', (socket) => {
   });
 
   // 10. Voice Chat Signaling (WebRTC Mesh) & Mic Status
-  socket.on('webrtc-offer', ({ to, offer }) => {
+  socket.on('webrtc-offer', ({ to, offer } = {}) => {
+    if (!to || !offer) return;
     const roomId = socketToRoom.get(socket.id);
     const room = roomId ? rooms.get(roomId) : null;
     const user = room?.users?.get(socket.id);
     if (user?.isMicMuted && !isAdminSocket(socket.id)) return;
+    console.log(`[WebRTC] Offer routed: ${socket.id} -> ${to}`);
     io.to(to).emit('webrtc-offer', { from: socket.id, offer });
   });
 
-  socket.on('webrtc-answer', ({ to, answer }) => {
+  socket.on('webrtc-answer', ({ to, answer } = {}) => {
+    if (!to || !answer) return;
+    console.log(`[WebRTC] Answer routed: ${socket.id} -> ${to}`);
     io.to(to).emit('webrtc-answer', { from: socket.id, answer });
   });
 
-  socket.on('webrtc-ice-candidate', ({ to, candidate }) => {
+  socket.on('webrtc-ice-candidate', ({ to, candidate } = {}) => {
+    if (!to || !candidate) return;
     io.to(to).emit('webrtc-ice-candidate', { from: socket.id, candidate });
   });
 
